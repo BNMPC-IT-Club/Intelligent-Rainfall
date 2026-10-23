@@ -14,7 +14,7 @@ import {
   ROOF_COEFFICIENTS,
   simulateMonthlyStorage,
 } from "@/lib/rainfall";
-import { completeMonthlySeries, fetchDistrictClimate, fetchForecast, locateBrowser, requestInsight, reverseGeocode } from "@/lib/climate";
+import { completeMonthlySeries, detectLocation, fetchDistrictClimate, fetchForecast, requestInsight, reverseGeocode } from "@/lib/climate";
 import type { ClimateDataset, DetectedPlace, ForecastDataset, InsightResponse } from "@/lib/climate";
 import { findDistrictPoint, findNearestDistrict } from "@/lib/districts";
 import { describeWeatherCode, weatherCodeIcon } from "@/lib/weathercodes";
@@ -379,6 +379,7 @@ export default function HomePage() {
   const [insightError, setInsightError] = useState("");
   const [geoStatus, setGeoStatus] = useState<GeoStatus>("idle");
   const [geoError, setGeoError] = useState("");
+  const [geoNote, setGeoNote] = useState("");
   const [forecastPoint, setForecastPoint] = useState<{ latitude: number; longitude: number } | null>(null);
   const [detectedPlace, setDetectedPlace] = useState<DetectedPlace | null>(null);
   const [forecast, setForecast] = useState<ForecastDataset | null>(null);
@@ -536,29 +537,37 @@ export default function HomePage() {
   async function detectMyLocation() {
     setGeoStatus("locating");
     setGeoError("");
+    setGeoNote("");
     setDetectedPlace(null);
-    try {
-      const position = await locateBrowser();
-      const { latitude, longitude } = position.coords;
-      setGeoStatus("done");
-      void loadForecastFor(latitude, longitude);
-      const place = await reverseGeocode(latitude, longitude);
-      if (place) setDetectedPlace(place);
-    } catch (error) {
-      const permissionDenied = error instanceof GeolocationPositionError && error.code === error.PERMISSION_DENIED;
-      setGeoStatus(permissionDenied ? "denied" : "error");
-      setGeoError(
-        permissionDenied
-          ? "Location access was denied. Allow location permission in your browser, or pick a district below instead."
-          : error instanceof Error ? error.message : "Could not detect your location.",
-      );
+
+    const located = await detectLocation();
+
+    if (!located.ok) {
+      setGeoStatus(located.kind === "denied" ? "denied" : "error");
+      setGeoError(located.message);
+      return;
     }
+
+    setGeoStatus("done");
+    setGeoNote(located.note);
+    void loadForecastFor(located.latitude, located.longitude);
+
+    if (located.place) {
+      setDetectedPlace(located.place);
+      return;
+    }
+    const place = await reverseGeocode(located.latitude, located.longitude);
+    if (place) setDetectedPlace(place);
   }
 
   function loadForecastForDistrict(districtName: string) {
     const point = findDistrictPoint(districtName);
     if (!point) return;
     setForecastDistrict(districtName);
+    // A manual pick supersedes any earlier detection attempt, including its warnings.
+    setGeoStatus("idle");
+    setGeoError("");
+    setGeoNote("");
     setDetectedPlace({ label: `${districtName} (district reference point)`, city: districtName, region: null, country: "Bangladesh" });
     void loadForecastFor(point.latitude, point.longitude);
   }
@@ -1257,7 +1266,7 @@ export default function HomePage() {
             <span className="locate-icon"><Icon name="target" size={19} /></span>
             <div>
               <strong>Detect my location</strong>
-              <p>Uses your browser&apos;s location permission once, client-side. Coordinates are sent only to fetch forecast + place name; nothing is stored on a server.</p>
+              <p>Uses your browser&apos;s location permission once, client-side. Coordinates are sent only to fetch forecast + place name; nothing is stored on a server. If your browser cannot produce a position, the app falls back to an approximate city from your IP address and says so.</p>
             </div>
           </div>
           <div className="locate-actions">
@@ -1267,6 +1276,7 @@ export default function HomePage() {
           </div>
         </div>
         {geoStatus === "denied" || geoStatus === "error" ? <div className="callout callout-warning"><Icon name="alert" size={18} /><div><strong>Location detection did not complete</strong><span>{geoError}</span></div></div> : null}
+        {geoStatus === "done" && geoNote ? <div className="callout callout-illustrative"><Icon name="info" size={18} /><div><strong>Approximate location used</strong><span>{geoNote}</span></div></div> : null}
         {!forecastPoint && forecastStatus === "idle" ? <EmptyState icon="sun" title="No location selected yet" description="Press “Detect my location” or choose a district above to load a live forecast." /> : null}
         {forecastStatus === "loading" ? <div className="live-data-bar live-loading"><span className="live-status-icon"><Icon name="spinner" size={17} className="spin" /></span><div className="live-status-copy"><strong>Fetching forecast…</strong><span>Requesting Open-Meteo for {detectedPlace?.label ?? `${forecastDistrict} reference point`}.</span></div></div> : null}
         {forecastStatus === "error" ? <div className="callout callout-warning"><Icon name="alert" size={18} /><div><strong>Forecast could not be loaded</strong><span>{forecastError}</span></div></div> : null}

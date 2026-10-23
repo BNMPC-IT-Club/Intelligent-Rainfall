@@ -140,18 +140,43 @@ browser (`localStorage`), so there is no database to provision.
 2. Add an environment variable:
    - **Local:** copy `.env.example` to `.env.local` and paste your key into `GROQ_API_KEY=`.
    - **Vercel:** Project → Settings → Environment Variables → add `GROQ_API_KEY` → redeploy.
-3. (Optional) Set `GROQ_MODEL` to use a different Groq-hosted model. Default: `llama-3.3-70b-versatile`.
+3. (Optional) Set `GROQ_MODEL` to use a different Groq-hosted model. Default: `openai/gpt-oss-20b`.
 
 Without this key, the AI Explanation tab still opens and clearly explains that it's turned off —
 it never fakes a response.
+
+#### Note on reasoning models (`openai/gpt-oss-*`)
+
+`openai/gpt-oss-20b` and `openai/gpt-oss-120b` are **reasoning** models: they spend hidden
+chain-of-thought tokens out of the *same* budget as the visible answer. If the token cap is too
+small, Groq answers `200 OK` with `content: ""` and `finish_reason: "length"` — which surfaces in
+the UI as an empty explanation rather than an error.
+
+The insights route handles this: it uses `max_completion_tokens` (not the legacy `max_tokens`),
+requests `reasoning_effort: "low"`, reserves 2,048 tokens (retrying once at 4,096), and reports the
+`finish_reason` and reasoning-token count if a response is still empty. If `GROQ_MODEL` names a
+slug that Groq has retired, the route falls back to `openai/gpt-oss-20b`, then `openai/gpt-oss-120b`,
+then `llama-3.1-8b-instant`. `GROQ_ENDPOINT` can point the route at any OpenAI-compatible gateway.
 
 ### The "Detect my location" forecast button — how it works, nothing to set up
 
 This uses the **browser's built-in Geolocation API** (`navigator.geolocation`), which only works on
 `https://` or `localhost` and always asks the visitor for permission first. No server-side key,
 no third-party SDK. Reverse-geocoding (turning coordinates into a place name) uses BigDataCloud's
-free client-side endpoint, also with no key. If a visitor denies permission, they can pick a
-district from the dropdown instead — the forecast still works.
+free client-side endpoint, also with no key.
+
+Location detection is deliberately layered, because a granted permission still fails often in
+practice (desktops without a positioning source, VPNs, embedded preview frames, slow lookups):
+
+1. `getCurrentPosition` with a 15 s timeout, allowing a 60 s cached fix.
+2. If that fails for any reason *other than an explicit denial*, a retry with
+   `enableHighAccuracy: true` and a 20 s timeout.
+3. If both fail, a keyless IP lookup (`ipwho.is`, then `freeipapi.com`) gives a city-level position.
+   The UI labels this clearly as approximate and non-GPS — it never passes it off as a device fix.
+
+An explicit denial is respected and never routed around; the message says what to change and points
+at the district dropdown. Failures name their cause (denied / unavailable / timeout / insecure
+context / embedded frame) instead of a generic "could not detect your location".
 
 ---
 
@@ -160,7 +185,8 @@ district from the dropdown instead — the forecast still works.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `GROQ_API_KEY` | No | Enables the AI explanation panel. Free tier at console.groq.com. |
-| `GROQ_MODEL` | No | Overrides the Groq model. Default `llama-3.3-70b-versatile`. |
+| `GROQ_MODEL` | No | Overrides the Groq model. Default `openai/gpt-oss-20b`; falls back automatically if the slug is retired. |
+| `GROQ_ENDPOINT` | No | Overrides the chat-completions URL. Default `https://api.groq.com/openai/v1/chat/completions`. |
 
 Copy `.env.example` to `.env.local` for local development. Nothing else is needed — rainfall and
 forecast data use public, keyless APIs.
